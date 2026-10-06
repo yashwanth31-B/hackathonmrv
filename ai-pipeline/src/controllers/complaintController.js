@@ -16,7 +16,133 @@ const createComplaintSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Helper: Process Intake with Retry & Heuristic Fallback Boundary
+// ---------------------------------------------------------------------------
+async function processIntakeWithRetry(description, imageBase64, complaintId, maxRetries = 2) {
+  let attempt = 0;
+  while (attempt <= maxRetries) {
+    try {
+      const agentOutput = await runIntakeAndTriageAgent(description, imageBase64, complaintId);
+
+      const update = {
+        title: agentOutput.summary || description.slice(0, 120),
+        category: agentOutput.category || null,
+        priority: agentOutput.priority || 'MEDIUM',
+        status: 'ANALYZED'
+      };
+
+      await dbQuery(supabaseAdmin.from('complaints').update(update).eq('id', complaintId));
+      console.log(
+        `[complaintController] Complaint ${complaintId} enriched → category: ${agentOutput.category}, priority: ${agentOutput.priority}`
+      );
+      return { success: true, agentOutput, update, isFallback: false };
+    } catch (err) {
+      attempt++;
+      console.warn(
+        `[complaintController] Intake agent attempt ${attempt}/${maxRetries + 1} failed for ${complaintId}: ${err.message}`
+      );
+
+      if (attempt <= maxRetries) {
+        // Backoff delay before retry (1.2s, 2.4s)
+        await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+      } else {
+        // Fallback Heuristics: ensures system resilience if external AI provider is unavailable
+        console.warn(
+          `[complaintController] Applying heuristic fallback for complaint ${complaintId} after retries exhausted.`
+        );
+
+        const lowerDesc = description.toLowerCase();
+        let fallbackCategory = 'OTHER';
+        let fallbackPriority = 'MEDIUM';
+        let fallbackDepartment = 'General Municipal Services';
+
+        if (
+          lowerDesc.includes('drain') ||
+          lowerDesc.includes('manhole') ||
+          lowerDesc.includes('sewage') ||
+          lowerDesc.includes('sewer')
+        ) {
+          fallbackCategory = 'DRAINAGE';
+          fallbackDepartment = 'Water Supply & Sewerage Board';
+        } else if (
+          lowerDesc.includes('pothole') ||
+          lowerDesc.includes('road') ||
+          lowerDesc.includes('asphalt')
+        ) {
+          fallbackCategory = 'POTHOLE';
+          fallbackDepartment = 'Roads & Infrastructure';
+        } else if (
+          lowerDesc.includes('light') ||
+          lowerDesc.includes('dark') ||
+          lowerDesc.includes('lamp') ||
+          lowerDesc.includes('electric')
+        ) {
+          fallbackCategory = 'STREETLIGHT';
+          fallbackDepartment = 'Electrical & Public Lighting';
+        } else if (
+          lowerDesc.includes('garbage') ||
+          lowerDesc.includes('trash') ||
+          lowerDesc.includes('waste')
+        ) {
+          fallbackCategory = 'GARBAGE';
+          fallbackDepartment = 'Sanitation & Waste Management';
+        }
+
+        if (
+          lowerDesc.includes('urgent') ||
+          lowerDesc.includes('danger') ||
+          lowerDesc.includes('crash') ||
+          lowerDesc.includes('accident') ||
+          lowerDesc.includes('hospital')
+        ) {
+          fallbackPriority = 'HIGH';
+        }
+
+        const fallbackOutput = {
+          category: fallbackCategory,
+          summary: description.slice(0, 100),
+          priority: fallbackPriority,
+          severityScore: fallbackPriority === 'HIGH' ? 8 : 5,
+          suggestedDepartment: fallbackDepartment,
+          reasoning: 'Fallback heuristic classification applied due to temporary AI API timeout.'
+        };
+
+        // Write fallback entry to agent_audit_logs
+        try {
+          await dbQuery(
+            supabaseAdmin.from('agent_audit_logs').insert({
+              complaint_id: complaintId,
+              agent_name: 'IntakeAndTriageAgent',
+              input_payload: { description, fallbackApplied: true, originalError: err.message },
+              output_payload: fallbackOutput
+            })
+          );
+        } catch (auditErr) {
+          console.warn('[complaintController] Fallback audit log write failed:', auditErr.message);
+        }
+
+        // Enrich complaint record with fallback
+        await dbQuery(
+          supabaseAdmin
+            .from('complaints')
+            .update({
+              title: fallbackOutput.summary,
+              category: fallbackOutput.category,
+              priority: fallbackOutput.priority,
+              status: 'ANALYZED'
+            })
+            .eq('id', complaintId)
+        );
+
+        return { success: true, agentOutput: fallbackOutput, isFallback: true };
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/complaints
+// Supports ?sync=true to await AI intake enrichment synchronously
 // ---------------------------------------------------------------------------
 export const createComplaint = async (req, res, next) => {
   try {
@@ -39,15 +165,16 @@ export const createComplaint = async (req, res, next) => {
       imageBase64
     } = parsed.data;
 
-    const citizenId = req.user.id;  // set by authenticate middleware
+    const citizenId = req.user.id; // set by authenticate middleware
+    const isSync = req.query.sync === 'true' || req.body.sync === true;
 
-    // 2. Insert bare complaint (SUBMITTED) — we'll enrich it with agent output next
+    // 2. Insert initial complaint (SUBMITTED)
     const [complaint] = await dbQuery(
       supabaseAdmin
         .from('complaints')
         .insert({
           citizen_id: citizenId,
-          title: description.slice(0, 120),  // placeholder title; overwritten by agent
+          title: description.slice(0, 120),
           description,
           location_text: location_text || null,
           latitude: latitude ?? null,
@@ -58,48 +185,38 @@ export const createComplaint = async (req, res, next) => {
         .select()
     );
 
-    // 3. Run Intake & Triage Agent asynchronously — do not block HTTP response
-    //    Update the complaint row with the agent's classification in the background.
-    runIntakeAndTriageAgent(description, imageBase64 || null, complaint.id)
-      .then(async (agentOutput) => {
-        // Map agent output → exact complaint column names
-        const update = {
-          title: agentOutput.summary || complaint.title,
-          category: agentOutput.category || null,
-          priority: agentOutput.priority || 'MEDIUM',
-          status: 'ANALYZED'
-        };
+    // 3. Process AI enrichment
+    if (isSync) {
+      // Synchronous mode: Await AI classification before returning HTTP response
+      const enrichmentResult = await processIntakeWithRetry(
+        description,
+        imageBase64 || null,
+        complaint.id
+      );
 
-        const { error: updateError } = await supabaseAdmin
-          .from('complaints')
-          .update(update)
-          .eq('id', complaint.id);
+      const [enrichedComplaint] = await dbQuery(
+        supabaseAdmin.from('complaints').select('*').eq('id', complaint.id)
+      );
 
-        if (updateError) {
-          console.error(
-            `[complaintController] Agent enrichment update failed for ${complaint.id}:`,
-            updateError.message
-          );
-        } else {
-          console.log(
-            `[complaintController] Complaint ${complaint.id} enriched → category: ${agentOutput.category}, priority: ${agentOutput.priority}`
-          );
-        }
-      })
-      .catch((agentErr) => {
-        // Agent failure must not crash the complaint creation; log and move on
-        console.error(
-          `[complaintController] runIntakeAndTriageAgent failed for ${complaint.id}:`,
-          agentErr.message
-        );
+      return res.status(201).json({
+        success: true,
+        message: 'Complaint submitted and AI analysis completed synchronously.',
+        data: enrichedComplaint,
+        agentOutput: enrichmentResult.agentOutput,
+        isFallback: enrichmentResult.isFallback
+      });
+    } else {
+      // Asynchronous mode: Fire and forget in background
+      processIntakeWithRetry(description, imageBase64 || null, complaint.id).catch((err) => {
+        console.error(`[complaintController] Background enrichment fatal error: ${err.message}`);
       });
 
-    // 4. Return the saved complaint immediately (agent runs in background)
-    return res.status(201).json({
-      success: true,
-      message: 'Complaint submitted successfully. AI analysis is running in the background.',
-      data: complaint
-    });
+      return res.status(201).json({
+        success: true,
+        message: 'Complaint submitted successfully. AI analysis is running in the background.',
+        data: complaint
+      });
+    }
   } catch (error) {
     next(error);
   }

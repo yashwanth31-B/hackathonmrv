@@ -115,7 +115,7 @@ export async function runVerificationAgent(
   feedbackPhotoBase64 = null
 ) {
   // ---- 1. Build model with structured output + optional multimodal ----
-  const model = getGeminiModel('gemini-2.5-flash', {
+  const model = getGeminiModel({
     systemInstruction: SYSTEM_INSTRUCTION,
     generationConfig: {
       responseMimeType: 'application/json',

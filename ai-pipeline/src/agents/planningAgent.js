@@ -134,7 +134,7 @@ Guidelines:
  */
 export async function runPlanningAgent(complaintData, clusterContext = null) {
   // ---- 1. Build model with structured output ----
-  const model = getGeminiModel('gemini-2.5-flash', {
+  const model = getGeminiModel({
     systemInstruction: SYSTEM_INSTRUCTION,
     generationConfig: {
       responseMimeType: 'application/json',

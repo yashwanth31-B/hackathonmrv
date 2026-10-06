@@ -99,7 +99,7 @@ export async function runIntakeAndTriageAgent(
   complaintId = null
 ) {
   // ---- 1. Build the model with structured output ----
-  const model = getGeminiModel('gemini-2.5-flash', {
+  const model = getGeminiModel({
     systemInstruction: SYSTEM_INSTRUCTION,
     generationConfig: {
       responseMimeType: 'application/json',

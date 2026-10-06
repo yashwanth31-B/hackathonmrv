@@ -20,17 +20,27 @@ if (!GEMINI_API_KEY) {
 export const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // ---------------------------------------------------------------------------
-// Default model – gemini-2.5-flash
-// Pre-configured, ready to use for any agent.
+// Default model – gemini-3.8-flash (configured via GEMINI_MODEL env or default)
 // ---------------------------------------------------------------------------
+export const DEFAULT_MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
 export const geminiModel = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash'
+  model: DEFAULT_MODEL_NAME
 });
 
 // ---------------------------------------------------------------------------
 // Factory – create a model with custom generationConfig / systemInstruction
 // ---------------------------------------------------------------------------
-export function getGeminiModel(modelName = 'gemini-2.5-flash', config = {}) {
+export function getGeminiModel(modelNameOrConfig = DEFAULT_MODEL_NAME, maybeConfig = {}) {
+  let modelName = DEFAULT_MODEL_NAME;
+  let config = maybeConfig;
+
+  if (typeof modelNameOrConfig === 'object' && modelNameOrConfig !== null) {
+    config = modelNameOrConfig;
+  } else if (typeof modelNameOrConfig === 'string') {
+    modelName = modelNameOrConfig;
+  }
+
   return genAI.getGenerativeModel({
     model: modelName,
     ...config
