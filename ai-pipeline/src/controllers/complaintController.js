@@ -18,7 +18,7 @@ const createComplaintSchema = z.object({
 // ---------------------------------------------------------------------------
 // Helper: Process Intake with Retry & Heuristic Fallback Boundary
 // ---------------------------------------------------------------------------
-async function processIntakeWithRetry(description, imageBase64, complaintId, maxRetries = 2) {
+async function processIntakeWithRetry(description, imageBase64, complaintId, maxRetries = 1) {
   let attempt = 0;
   while (attempt <= maxRetries) {
     try {
