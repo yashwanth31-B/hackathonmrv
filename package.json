@@ -1,0 +1,32 @@
+{
+  "name": "civicfix-backend",
+  "version": "1.0.0",
+  "description": "CivicFix Autonomous Civic Operations Agent - Core Backend Server",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seedDemoData.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.24.2"
+  },
+  "keywords": [
+    "civicfix",
+    "autonomous-agent",
+    "supabase",
+    "express",
+    "postgis",
+    "civic-operations"
+  ],
+  "author": "CivicFix Team",
+  "license": "ISC"
+}
