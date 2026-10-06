@@ -72,8 +72,9 @@ Output ONLY valid JSON with this exact structure:
 Do not claim false certainty; confidence should be between 0.40 and 0.99.
 Severity must be one of: LOW, MEDIUM, HIGH, CRITICAL.`;
 
+    const modelName = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: modelName,
       contents: [
         {
           role: 'user',
@@ -93,8 +94,12 @@ Severity must be one of: LOW, MEDIUM, HIGH, CRITICAL.`;
       },
     });
 
-    const text = response.text?.trim() || '{}';
-    const parsed = JSON.parse(text);
+    const rawText = response.text?.trim() || '{}';
+    const cleanText = rawText
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    const parsed = JSON.parse(cleanText);
 
     return {
       predictedCategory: parsed.predictedCategory || 'Other',
